@@ -1,0 +1,86 @@
+server:
+  port: 9443
+  ssl:
+    enabled: true
+    key-store-type: JKS
+    key-store: /home/wpits/apache-tomcat-8.5.85/conf/keystore.jks
+    key-store-password: Wpits@1234
+
+spring:
+  application:
+    name: gateway
+  servlet:
+    multipart:
+      max-file-size: 1000MB
+      max-request-size: 1000MB
+
+zuul:
+  sensitive-headers:
+  host:
+    connect-timeout-millis: 60000
+    socket-timeout-millis: 60000
+
+  routes:
+    user:
+      path: /user/**
+      url: http://172.30.3.7:9091
+      strip-prefix: true
+
+    campaign:
+      path: /campaign/**
+      url: http://172.30.3.7:9094
+      strip-prefix: true
+
+    ekyc:
+      path: /ekyc/**
+      url: http://172.30.3.5:9898
+      strip-prefix: true
+
+    ussd_dashboard:
+      path: /ussd_dashboard/**
+      url: http://172.30.3.6:9891
+      strip-prefix: true
+
+    ekyc_dashboard:
+      path: /ekyc_dashboard/**
+      url: http://172.30.3.5:9292
+      strip-prefix: true
+
+    sms:
+      path: /sms/**
+      url: http://172.30.3.7:9092
+      strip-prefix: true
+
+    sms_report:
+      path: /sms_report/**
+      url: http://172.30.3.7:9095
+      strip-prefix: true
+
+    auth:
+      path: /api/client/auth/**
+      url: http://172.30.3.7:9091
+      strip-prefix: true
+
+    adapter-service:
+      path: /adapter/**
+      url: http://172.30.3.5:8081
+      strip-prefix: true
+
+    selcare:
+      path: /selfcare/**
+      url: http://172.30.3.5:9090
+      strip-prefix: true
+
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: "*"
+
+
+logging:
+  level:
+    org.springframework.cloud.netflix.zuul: DEBUG
+    com.netflix.zuul: DEBUG
+    com.wpits.gateway: INFO
