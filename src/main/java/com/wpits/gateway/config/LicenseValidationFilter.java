@@ -72,6 +72,8 @@ public class LicenseValidationFilter extends ZuulFilter {
         return true;
     }
 
+    public static final String INSTALLATION_LICENSE_ID = "07726a83-4b3d-4b9b-adbc-f9f6c986732f";
+
     @Override
     public Object run() {
         RequestContext ctx = RequestContext.getCurrentContext();
@@ -85,12 +87,20 @@ public class LicenseValidationFilter extends ZuulFilter {
             return null;
         }
     
+        boolean onlineValid = false;
         try {
-            if (validateKeyForProduct(licenseKey).isValid()) {
-                return null;
-            }
+            onlineValid = validateKeyForProduct(licenseKey).isValid();
         } catch (Exception e) {
             // Keygen did not return a successful validation. The installation file decides.
+        }
+
+        if (onlineValid) {
+            try {
+                licenseFileService.refreshFromCheckout(INSTALLATION_LICENSE_ID, licenseKey);
+            } catch (Exception e) {
+                // If checkout fails or new certificate does not cover, previous file stays and request is allowed.
+            }
+            return null;
         }
 
         if (!licenseFileService.covers(licenseKey)) {

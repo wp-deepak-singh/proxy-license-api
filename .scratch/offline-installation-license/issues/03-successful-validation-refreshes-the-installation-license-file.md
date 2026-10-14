@@ -6,9 +6,9 @@
 
 **Status:** ready-for-agent
 
-- [ ] Every gated request with a successful online validation checks out license `07726a83-4b3d-4b9b-adbc-f9f6c986732f` before the request is allowed
-- [ ] The new certificate replaces the installation license file only when it is covering, including a visible file expiry that the gateway’s current time has not passed
-- [ ] A failed checkout, or a new certificate that does not cover, leaves the previous file in place and the gated request is still allowed
-- [ ] An expired, suspended, banned, fingerprint-mismatch, or other non-valid result does not check out
-- [ ] A transport failure does not check out
-- [ ] `/api/client/auth/**` and `/actuator/**` are unchanged
+- [x] Every gated request with a successful online validation checks out license `07726a83-4b3d-4b9b-adbc-f9f6c986732f` before the request is allowed
+- [x] The new certificate replaces the installation license file only when it is covering, including a visible file expiry that the gateway’s current time has not passed
+- [x] A failed checkout, or a new certificate that does not cover, leaves the previous file in place and the gated request is still allowed
+- [x] An expired, suspended, banned, fingerprint-mismatch, or other non-valid result does not check out
+- [x] A transport failure does not check out
+- [x] `/api/client/auth/**` and `/actuator/**` are unchanged

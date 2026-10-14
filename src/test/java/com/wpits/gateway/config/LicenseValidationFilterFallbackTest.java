@@ -358,6 +358,7 @@ class LicenseValidationFilterFallbackTest {
         assertEquals(401, context.getResponseStatusCode());
         assertEquals(1, restTemplate.calls.size(), "a denied fallback still does not check out or look up grace");
         assertTrue(restTemplate.calls.get(0).contains("validate-key"));
+        assertFalse(restTemplate.calls.get(0).contains("check-out"));
     }
 
     private void assertDeniedWithoutKeygen(RequestContext context) {
@@ -560,23 +561,204 @@ class LicenseValidationFilterFallbackTest {
         return Base64.getEncoder().encodeToString(signer.generateSignature());
     }
 
+    private String checkoutResponseBody(String certificate) throws Exception {
+        ObjectNode root = objectMapper.createObjectNode();
+        root.putObject("data").putObject("attributes").put("certificate", certificate);
+        return objectMapper.writeValueAsString(root);
+    }
+
+    @Test
+    void successfulOnlineValidationChecksOutInstallationLicenseBeforeAllowingRequest() throws Exception {
+        String newCert = certificate(privateKey, LICENSE_KEY, "2099-01-01T00:00:00Z", null);
+        restTemplate.responsesByUrlPattern.put("validate-key", ResponseEntity.ok(
+                "{\"meta\":{\"valid\":true},\"data\":{\"attributes\":{\"status\":\"ACTIVE\"}}}"));
+        restTemplate.responsesByUrlPattern.put("check-out", ResponseEntity.ok(
+                checkoutResponseBody(newCert)));
+
+        RequestContext context = gatedRequest(LICENSE_KEY);
+
+        filter.run();
+
+        assertTrue(context.sendZuulResponse());
+        assertEquals(2, restTemplate.calls.size());
+        assertTrue(restTemplate.calls.get(0).contains("validate-key"), "first call validates key");
+        assertEquals("http://keygen.test/v1/accounts/account/licenses/07726a83-4b3d-4b9b-adbc-f9f6c986732f/actions/check-out",
+                restTemplate.calls.get(1), "second call checks out installation license");
+    }
+
+    @Test
+    void coveringCheckedOutCertificateReplacesInstallationLicenseFile() throws Exception {
+        String oldCert = certificate(privateKey, LICENSE_KEY, "2026-01-01T00:00:00Z", null, "2026-06-01T00:00:00Z");
+        Files.write(storagePath, oldCert.getBytes(StandardCharsets.UTF_8));
+
+        String newCert = certificate(privateKey, LICENSE_KEY, "2030-01-01T00:00:00Z", 24, "2030-06-01T00:00:00Z");
+        restTemplate.responsesByUrlPattern.put("validate-key", ResponseEntity.ok(
+                "{\"meta\":{\"valid\":true},\"data\":{\"attributes\":{\"status\":\"ACTIVE\"}}}"));
+        restTemplate.responsesByUrlPattern.put("check-out", ResponseEntity.ok(
+                checkoutResponseBody(newCert)));
+
+        RequestContext context = gatedRequest(LICENSE_KEY);
+
+        filter.run();
+
+        assertTrue(context.sendZuulResponse());
+        String saved = new String(Files.readAllBytes(storagePath), StandardCharsets.UTF_8);
+        assertEquals(newCert, saved, "installation license file was replaced with the new covering certificate");
+    }
+
+    @Test
+    void allowsGatedRequestAndKeepsPreviousFileWhenCheckoutThrows() throws Exception {
+        String oldCert = certificate(privateKey, LICENSE_KEY, "2026-01-01T00:00:00Z", null, "2026-06-01T00:00:00Z");
+        Files.write(storagePath, oldCert.getBytes(StandardCharsets.UTF_8));
+
+        restTemplate.responsesByUrlPattern.put("validate-key", ResponseEntity.ok(
+                "{\"meta\":{\"valid\":true},\"data\":{\"attributes\":{\"status\":\"ACTIVE\"}}}"));
+        restTemplate.failuresByUrlPattern.put("check-out",
+                new ResourceAccessException("Checkout network timeout", new SocketTimeoutException("timeout")));
+
+        RequestContext context = gatedRequest(LICENSE_KEY);
+
+        filter.run();
+
+        assertTrue(context.sendZuulResponse(), "gated request is still allowed when checkout fails");
+        assertEquals(oldCert, new String(Files.readAllBytes(storagePath), StandardCharsets.UTF_8),
+                "previous license file stays in place when checkout fails");
+    }
+
+    @Test
+    void allowsGatedRequestAndKeepsPreviousFileWhenCheckoutReturnsHttpError() throws Exception {
+        String oldCert = certificate(privateKey, LICENSE_KEY, "2026-01-01T00:00:00Z", null, "2026-06-01T00:00:00Z");
+        Files.write(storagePath, oldCert.getBytes(StandardCharsets.UTF_8));
+
+        restTemplate.responsesByUrlPattern.put("validate-key", ResponseEntity.ok(
+                "{\"meta\":{\"valid\":true},\"data\":{\"attributes\":{\"status\":\"ACTIVE\"}}}"));
+        restTemplate.responsesByUrlPattern.put("check-out",
+                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("{\"error\":\"Internal error\"}"));
+
+        RequestContext context = gatedRequest(LICENSE_KEY);
+
+        filter.run();
+
+        assertTrue(context.sendZuulResponse(), "gated request is still allowed when checkout returns 500");
+        assertEquals(oldCert, new String(Files.readAllBytes(storagePath), StandardCharsets.UTF_8),
+                "previous license file stays in place when checkout returns 500");
+    }
+
+    @Test
+    void allowsGatedRequestAndKeepsPreviousFileWhenCheckedOutCertificateKeyMismatches() throws Exception {
+        String oldCert = certificate(privateKey, LICENSE_KEY, "2026-01-01T00:00:00Z", null, "2026-06-01T00:00:00Z");
+        Files.write(storagePath, oldCert.getBytes(StandardCharsets.UTF_8));
+
+        String nonCoveringCert = certificate(privateKey, "other-key", "2099-01-01T00:00:00Z", null, "2099-01-01T00:00:00Z");
+        restTemplate.responsesByUrlPattern.put("validate-key", ResponseEntity.ok(
+                "{\"meta\":{\"valid\":true},\"data\":{\"attributes\":{\"status\":\"ACTIVE\"}}}"));
+        restTemplate.responsesByUrlPattern.put("check-out", ResponseEntity.ok(
+                checkoutResponseBody(nonCoveringCert)));
+
+        RequestContext context = gatedRequest(LICENSE_KEY);
+
+        filter.run();
+
+        assertTrue(context.sendZuulResponse());
+        assertEquals(oldCert, new String(Files.readAllBytes(storagePath), StandardCharsets.UTF_8),
+                "mismatched key does not cover and leaves previous file");
+    }
+
+    @Test
+    void allowsGatedRequestAndKeepsPreviousFileWhenCheckedOutCertificateFileExpiryPassed() throws Exception {
+        String oldCert = certificate(privateKey, LICENSE_KEY, "2026-01-01T00:00:00Z", null, "2026-06-01T00:00:00Z");
+        Files.write(storagePath, oldCert.getBytes(StandardCharsets.UTF_8));
+        useClock(Clock.fixed(Instant.parse("2026-07-01T00:00:00Z"), ZoneOffset.UTC));
+
+        String nonCoveringCert = certificate(privateKey, LICENSE_KEY, "2099-01-01T00:00:00Z", null, "2026-06-30T23:59:59Z");
+        restTemplate.responsesByUrlPattern.put("validate-key", ResponseEntity.ok(
+                "{\"meta\":{\"valid\":true},\"data\":{\"attributes\":{\"status\":\"ACTIVE\"}}}"));
+        restTemplate.responsesByUrlPattern.put("check-out", ResponseEntity.ok(
+                checkoutResponseBody(nonCoveringCert)));
+
+        RequestContext context = gatedRequest(LICENSE_KEY);
+
+        filter.run();
+
+        assertTrue(context.sendZuulResponse());
+        assertEquals(oldCert, new String(Files.readAllBytes(storagePath), StandardCharsets.UTF_8),
+                "expired file expiry does not cover and leaves previous file");
+    }
+
+    @Test
+    void allowsGatedRequestAndKeepsPreviousFileWhenCheckedOutCertificateLicenseExpiryPassedWithoutGrace() throws Exception {
+        String oldCert = certificate(privateKey, LICENSE_KEY, "2026-01-01T00:00:00Z", null, "2026-06-01T00:00:00Z");
+        Files.write(storagePath, oldCert.getBytes(StandardCharsets.UTF_8));
+        useClock(Clock.fixed(Instant.parse("2026-03-01T00:00:00Z"), ZoneOffset.UTC));
+
+        String nonCoveringCert = certificate(privateKey, LICENSE_KEY, "2026-02-01T00:00:00Z", null, "2099-01-01T00:00:00Z");
+        restTemplate.responsesByUrlPattern.put("validate-key", ResponseEntity.ok(
+                "{\"meta\":{\"valid\":true},\"data\":{\"attributes\":{\"status\":\"ACTIVE\"}}}"));
+        restTemplate.responsesByUrlPattern.put("check-out", ResponseEntity.ok(
+                checkoutResponseBody(nonCoveringCert)));
+
+        RequestContext context = gatedRequest(LICENSE_KEY);
+
+        filter.run();
+
+        assertTrue(context.sendZuulResponse());
+        assertEquals(oldCert, new String(Files.readAllBytes(storagePath), StandardCharsets.UTF_8),
+                "expired license expiry without grace does not cover and leaves previous file");
+    }
+
+    @Test
+    void allowsGatedRequestAndKeepsPreviousFileWhenCheckedOutCertificateSignatureIsInvalid() throws Exception {
+        String oldCert = certificate(privateKey, LICENSE_KEY, "2026-01-01T00:00:00Z", null, "2026-06-01T00:00:00Z");
+        Files.write(storagePath, oldCert.getBytes(StandardCharsets.UTF_8));
+
+        Ed25519KeyPairGenerator generator = new Ed25519KeyPairGenerator();
+        generator.init(new Ed25519KeyGenerationParameters(new SecureRandom()));
+        Ed25519PrivateKeyParameters otherKey = (Ed25519PrivateKeyParameters) generator.generateKeyPair().getPrivate();
+
+        String nonCoveringCert = certificate(otherKey, LICENSE_KEY, "2099-01-01T00:00:00Z", null, "2099-01-01T00:00:00Z");
+        restTemplate.responsesByUrlPattern.put("validate-key", ResponseEntity.ok(
+                "{\"meta\":{\"valid\":true},\"data\":{\"attributes\":{\"status\":\"ACTIVE\"}}}"));
+        restTemplate.responsesByUrlPattern.put("check-out", ResponseEntity.ok(
+                checkoutResponseBody(nonCoveringCert)));
+
+        RequestContext context = gatedRequest(LICENSE_KEY);
+
+        filter.run();
+
+        assertTrue(context.sendZuulResponse());
+        assertEquals(oldCert, new String(Files.readAllBytes(storagePath), StandardCharsets.UTF_8),
+                "invalid signature does not cover and leaves previous file");
+    }
+
     private static class RecordingRestTemplate extends RestTemplate {
         private final List<String> calls = new ArrayList<String>();
         private RuntimeException failure;
         private ResponseEntity<String> response;
+        private final java.util.Map<String, ResponseEntity<String>> responsesByUrlPattern = new java.util.LinkedHashMap<>();
+        private final java.util.Map<String, RuntimeException> failuresByUrlPattern = new java.util.LinkedHashMap<>();
 
         @Override
         @SuppressWarnings("unchecked")
         public <T> ResponseEntity<T> postForEntity(String url, Object request, Class<T> responseType,
                                                    Object... uriVariables) {
             calls.add(url);
+            for (java.util.Map.Entry<String, RuntimeException> entry : failuresByUrlPattern.entrySet()) {
+                if (url.contains(entry.getKey())) {
+                    throw entry.getValue();
+                }
+            }
+            for (java.util.Map.Entry<String, ResponseEntity<String>> entry : responsesByUrlPattern.entrySet()) {
+                if (url.contains(entry.getKey())) {
+                    return (ResponseEntity<T>) entry.getValue();
+                }
+            }
             if (failure != null) {
                 throw failure;
             }
             if (response != null) {
                 return (ResponseEntity<T>) response;
             }
-            throw new IllegalStateException("no Keygen response stubbed");
+            throw new IllegalStateException("no Keygen response stubbed for " + url);
         }
 
         @Override

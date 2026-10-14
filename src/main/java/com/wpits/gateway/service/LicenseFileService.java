@@ -90,6 +90,10 @@ public class LicenseFileService {
                     "Invalid license file: " + result.getReason());
         }
 
+        return saveCertificate(certificate);
+    }
+
+    private Path saveCertificate(String certificate) throws IOException {
         Path absolutePath = storagePath.toAbsolutePath();
         Path parent = absolutePath.getParent();
 
@@ -124,9 +128,33 @@ public class LicenseFileService {
         return absolutePath;
     }
 
+    public boolean refreshFromCheckout(String licenseId, String headerLicenseKey) {
+        try {
+            String certificate = keygenService.checkOutLicenseFile(licenseId);
+            if (coversCertificate(certificate, headerLicenseKey)) {
+                saveCertificate(certificate);
+                return true;
+            }
+        } catch (Exception e) {
+            // Checkout failed or new certificate does not cover; previous file stays
+        }
+        return false;
+    }
+
     public boolean covers(String headerLicenseKey) {
         try {
             String certificate = new String(Files.readAllBytes(storagePath), StandardCharsets.UTF_8);
+            return coversCertificate(certificate, headerLicenseKey);
+        } catch (Exception ex) {
+            return false;
+        }
+    }
+
+    public boolean coversCertificate(String certificate, String headerLicenseKey) {
+        try {
+            if (certificate == null || certificate.trim().isEmpty()) {
+                return false;
+            }
             JsonNode payload = decodePayload(certificate);
             String enc = payload.path("enc").asText();
             String sig = payload.path("sig").asText();
