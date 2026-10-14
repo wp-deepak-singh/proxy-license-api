@@ -2,9 +2,9 @@ server:
   port: 9443
   ssl:
     enabled: true
-    key-store-type: JKS
-    key-store: /home/wpits/apache-tomcat-8.5.85/conf/keystore.jks
-    key-store-password: Wpits@1234
+    key-store-type: PKCS12
+    key-store: keystore.p12
+    key-store-password: P@ssw0rd
 
 spring:
   application:
@@ -13,6 +13,16 @@ spring:
     multipart:
       max-file-size: 1000MB
       max-request-size: 1000MB
+keygen:
+  public-key: "2074dd9ff514a586a6471ae738a9abfbb78aac0e5345f988d3cb3786479ee214"
+  account-id: "08f51f80-f1b1-4cba-84d7-b0fde61a5805"
+  license-id: "8a65665e-0b00-46bd-ba73-76f068daaaea"
+  api-url: "http://localhost"
+  token: "admin-0e155d97036374abcb7fa51b3a24a49488b053375164f48c248c33a66cc586dbv3"
+  product:
+    id: "6aac1ddd-353b-4ad0-af33-3e7c32f2e0e5"
+  storage:
+    path: "./license.lic"
 
 zuul:
   sensitive-headers:
