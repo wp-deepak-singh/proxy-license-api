@@ -43,7 +43,7 @@ public class LicenseFileService {
             @Value("${keygen.account-id}") String accountId,
             @Value("${keygen.token}") String token,
             @Value("${keygen.public-key}") String publicKeyHex,
-            @Value("${keygen.storage.path:./license.lic}") String storagePath) {
+            @Value("${keygen.storage.path:license.lic}") String storagePath) {
         this.objectMapper = objectMapper;
         this.keygenService = keygenService;
         this.publicKeyHex = publicKeyHex;
@@ -101,9 +101,21 @@ public class LicenseFileService {
         return absolutePath;
     }
 
-    public LicenseFileValidationResult validateSavedLicenseFile() throws IOException {
-        return validateLicenseFile(new String(Files.readAllBytes(storagePath), StandardCharsets.UTF_8));
+    public LicenseFileValidationResult validateSavedLicenseFile(String licenseId)
+        throws IOException {
+
+    // 1. Checkout only when no local license file exists.
+    if (!Files.exists(storagePath)) {
+        checkOutAndSaveLicenseFile(licenseId);
     }
+
+    // 2. Read and verify the existing saved file.
+    String certificate = new String(
+            Files.readAllBytes(storagePath),
+            StandardCharsets.UTF_8);
+
+    return validateLicenseFile(certificate);
+}
 
    public LicenseFileValidationResult validateLicenseFile(
         String certificate) throws IOException {

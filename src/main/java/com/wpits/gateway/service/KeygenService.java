@@ -12,6 +12,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.time.Instant;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
 
 @Service
 public class KeygenService {
@@ -134,5 +136,47 @@ public class KeygenService {
     }
 
     throw new IllegalStateException("No license found");
+}
+public String fetchLicenseIdFromKey(String licenseKey)
+        throws IOException {
+
+    String url = keygenApiUrl + "/v1/accounts/"
+            + accountId + "/licenses/actions/validate-key";
+
+    HttpHeaders headers = new HttpHeaders();
+    headers.setContentType(
+            MediaType.parseMediaType("application/vnd.api+json"));
+    headers.setAccept(Collections.singletonList(
+            MediaType.parseMediaType("application/vnd.api+json")));
+
+    Map<String, Object> meta = new HashMap<>();
+    meta.put("key", licenseKey);
+
+    Map<String, Object> body = new HashMap<>();
+    body.put("meta", meta);
+
+    HttpEntity<String> entity = new HttpEntity<>(
+            objectMapper.writeValueAsString(body), headers);
+
+    ResponseEntity<String> response = restTemplate.postForEntity(
+            url, entity, String.class);
+
+    if (!response.getStatusCode().is2xxSuccessful()
+            || response.getBody() == null) {
+        throw new IllegalStateException(
+                "Keygen license lookup failed: " + response.getStatusCode());
+    }
+
+    JsonNode root = objectMapper.readTree(response.getBody());
+
+    boolean valid = root.path("meta").path("valid").asBoolean(false);
+    String licenseId = root.path("data").path("id").asText("");
+
+    if (!valid || licenseId.trim().isEmpty()) {
+        throw new IllegalStateException(
+                "Invalid license key or license ID not found");
+    }
+
+    return licenseId;
 }
 }

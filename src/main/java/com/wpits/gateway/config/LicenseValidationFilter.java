@@ -4,6 +4,9 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.netflix.zuul.ZuulFilter;
 import com.netflix.zuul.context.RequestContext;
+import com.wpits.gateway.service.KeygenService;
+import com.wpits.gateway.service.LicenseFileService;
+
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
@@ -11,6 +14,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Component;
+import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestTemplate;
 
 import javax.servlet.http.HttpServletRequest;
@@ -35,10 +39,15 @@ public class LicenseValidationFilter extends ZuulFilter {
 
     private final RestTemplate restTemplate;
     private final ObjectMapper objectMapper;
+    private final LicenseFileService licenseFileService;
+    private final KeygenService keygenService;
 
-    public LicenseValidationFilter(RestTemplate restTemplate, ObjectMapper objectMapper) {
+
+    public LicenseValidationFilter(RestTemplate restTemplate, ObjectMapper objectMapper, LicenseFileService licenseFileService, KeygenService keygenService) {
         this.restTemplate = restTemplate;
         this.objectMapper = objectMapper;
+        this.licenseFileService = licenseFileService;
+        this.keygenService = keygenService;
     }
 
     @Override
@@ -70,24 +79,52 @@ public class LicenseValidationFilter extends ZuulFilter {
     public Object run() {
         RequestContext ctx = RequestContext.getCurrentContext();
         HttpServletRequest request = ctx.getRequest();
-
+    
         String licenseKey = request.getHeader("X-License-Key");
-        if (licenseKey == null || licenseKey.isEmpty()) {
-            failRequest(ctx, "Missing 'X-License-Key' header.", HttpStatus.UNAUTHORIZED);
+    
+        if (licenseKey == null || licenseKey.trim().isEmpty()) {
+            failRequest(ctx, "Missing X-License-Key header.",
+                    HttpStatus.UNAUTHORIZED);
             return null;
         }
-
+    
         try {
-            LicenseValidationResult result = validateKeyForProduct(licenseKey);
+            // Try online validation first.
+            LicenseValidationResult result =
+                    validateKeyForProduct(licenseKey);
+    
             if (!result.isValid()) {
-                failRequest(ctx, result.getMessage(), HttpStatus.UNAUTHORIZED);
+                failRequest(ctx, result.getMessage(),
+                        HttpStatus.UNAUTHORIZED);
                 return null;
             }
+    
+            // Online validation succeeded.
+            return null;
+    
         } catch (Exception e) {
-            failRequest(ctx, "License validation exception: " + e.getMessage(), HttpStatus.INTERNAL_SERVER_ERROR);
+            // Keygen is unreachable: use the saved license file.
+            try {
+                String licenseId = keygenService.fetchLicenseIdFromKey(licenseKey);
+                LicenseFileService.LicenseFileValidationResult offlineResult =
+                        licenseFileService.validateSavedLicenseFile(licenseId);
+    
+                if (!offlineResult.isValid()) {
+                    failRequest(ctx,
+                            "Offline license invalid: "
+                                    + offlineResult.getReason(),
+                            HttpStatus.UNAUTHORIZED);
+                }
+    
+            } catch (Exception offlineException) {
+                failRequest(ctx,
+                        "Offline license validation failed.",
+                        HttpStatus.UNAUTHORIZED);
+            }
+    
         }
-
-        return null; // Passes through to microservices
+    
+        return null;
     }
 
     private LicenseValidationResult validateKeyForProduct(String licenseKey) throws Exception {
