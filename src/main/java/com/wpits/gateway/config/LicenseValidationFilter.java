@@ -13,7 +13,6 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Component;
-import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestTemplate;
 
 import javax.servlet.http.HttpServletRequest;
@@ -32,6 +31,9 @@ public class LicenseValidationFilter extends ZuulFilter {
 
     @Value("${keygen.account-id}")
     private String accountId;
+
+    @Value ("${keygen.license-id}")
+    private String licenseId;
 
     @Value("${keygen.product-id}")
     private String productId;
@@ -72,8 +74,6 @@ public class LicenseValidationFilter extends ZuulFilter {
         return true;
     }
 
-    public static final String INSTALLATION_LICENSE_ID = "07726a83-4b3d-4b9b-adbc-f9f6c986732f";
-
     @Override
     public Object run() {
         RequestContext ctx = RequestContext.getCurrentContext();
@@ -87,6 +87,7 @@ public class LicenseValidationFilter extends ZuulFilter {
             return null;
         }
     
+        System.out.println("Validating license key: " + licenseKey + " for product: " + productId + " and license ID: " + licenseId);
         boolean onlineValid = false;
         try {
             onlineValid = validateKeyForProduct(licenseKey).isValid();
@@ -96,7 +97,7 @@ public class LicenseValidationFilter extends ZuulFilter {
 
         if (onlineValid) {
             try {
-                licenseFileService.refreshFromCheckout(INSTALLATION_LICENSE_ID, licenseKey);
+                licenseFileService.refreshFromCheckout(licenseId, licenseKey);
             } catch (Exception e) {
                 // If checkout fails or new certificate does not cover, previous file stays and request is allowed.
             }

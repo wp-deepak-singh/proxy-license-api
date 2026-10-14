@@ -19,6 +19,7 @@ keygen:
   api-url: "http://localhost"
   token: "admin-0e155d97036374abcb7fa51b3a24a49488b053375164f48c248c33a66cc586dbv3"
   product-id: "6aac1ddd-353b-4ad0-af33-3e7c32f2e0e5"
+  license-id: "858ccd5d-c761-4209-a3b8-08d5497288ad"
   storage:
     path: "license.lic"
 
