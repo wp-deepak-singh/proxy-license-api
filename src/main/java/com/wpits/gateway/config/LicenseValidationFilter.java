@@ -30,7 +30,7 @@ public class LicenseValidationFilter extends ZuulFilter {
     @Value("${keygen.account-id}")
     private String accountId;
 
-    @Value("${keygen.product.id}")
+    @Value("${keygen.product-id}")
     private String productId;
 
     private final RestTemplate restTemplate;

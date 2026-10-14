@@ -27,96 +27,159 @@ public class LicenseFileService {
 
     private static final String BEGIN_LICENSE_FILE = "-----BEGIN LICENSE FILE-----";
     private static final String END_LICENSE_FILE = "-----END LICENSE FILE-----";
-    private static final String EXPECTED_ALGORITHM = "base64+ed25519";
 
-    private final RestTemplate restTemplate;
     private final ObjectMapper objectMapper;
-    private final String keygenApiUrl;
-    private final String accountId;
-    private final String licenseId;
-    private final String token;
     private final String publicKeyHex;
+    private final String productId;
     private final Path storagePath;
+    private final KeygenService keygenService;
 
     public LicenseFileService(
             RestTemplate restTemplate,
             ObjectMapper objectMapper,
+            KeygenService keygenService,
+            @Value("${keygen.product-id}") String productId,
             @Value("${keygen.api-url}") String keygenApiUrl,
             @Value("${keygen.account-id}") String accountId,
-            @Value("${keygen.license-id:}") String licenseId,
             @Value("${keygen.token}") String token,
             @Value("${keygen.public-key}") String publicKeyHex,
             @Value("${keygen.storage.path:./license.lic}") String storagePath) {
-        this.restTemplate = restTemplate;
         this.objectMapper = objectMapper;
-        this.keygenApiUrl = keygenApiUrl;
-        this.accountId = accountId;
-        this.licenseId = licenseId;
-        this.token = token;
+        this.keygenService = keygenService;
         this.publicKeyHex = publicKeyHex;
+        this.productId = productId;
         this.storagePath = Paths.get(storagePath);
     }
 
-    public Path checkOutAndSaveLicenseFile() throws IOException {
-        if (licenseId == null || licenseId.trim().isEmpty()) {
-            throw new IllegalStateException("Missing keygen.license-id");
+    public Path checkOutAndSaveLicenseFile(String licenseId) throws IOException {
+        if (productId == null || productId.trim().isEmpty()) {
+            throw new IllegalStateException("Missing productId");
         }
 
-        String url = keygenApiUrl + "/v1/accounts/" + accountId + "/licenses/" + licenseId + "/actions/check-out";
-        HttpHeaders headers = new HttpHeaders();
-        headers.setAccept(Collections.singletonList(MediaType.valueOf("application/vnd.api+json")));
-        headers.setContentType(MediaType.valueOf("application/vnd.api+json"));
-        headers.setBearerAuth(token);
+        // Checkout the offline license certificate.
+        String certificate = keygenService.checkOutLicenseFile(licenseId);
 
-        ResponseEntity<String> response = restTemplate.postForEntity(url, new HttpEntity<>("", headers), String.class);
-        if (!response.getStatusCode().is2xxSuccessful() || response.getBody() == null) {
-            throw new IllegalStateException("Keygen checkout failed: " + response.getStatusCode());
+        // Verify before saving.
+        LicenseFileValidationResult result = validateLicenseFile(certificate);
+
+        if (!result.isValid()) {
+            throw new IllegalStateException(
+                    "Invalid license file: " + result.getReason());
         }
 
-        JsonNode root = objectMapper.readTree(response.getBody());
-        String certificate = root.path("data").path("attributes").path("certificate").asText();
-        if (certificate == null || certificate.trim().isEmpty()) {
-            throw new IllegalStateException("Keygen checkout response did not include a certificate");
-        }
+        Path absolutePath = storagePath.toAbsolutePath();
+        Path parent = absolutePath.getParent();
 
-        Path parent = storagePath.toAbsolutePath().getParent();
         if (parent != null) {
             Files.createDirectories(parent);
         }
-        Files.write(storagePath, certificate.getBytes(StandardCharsets.UTF_8));
-        return storagePath;
+
+        Path tempPath = Files.createTempFile(
+                parent, "license-", ".tmp");
+
+        try {
+            Files.write(
+                    tempPath,
+                    certificate.getBytes(StandardCharsets.UTF_8));
+
+            try {
+                Files.move(
+                        tempPath,
+                        absolutePath,
+                        java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+                        java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            } catch (java.nio.file.AtomicMoveNotSupportedException e) {
+                Files.move(
+                        tempPath,
+                        absolutePath,
+                        java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            }
+        } finally {
+            Files.deleteIfExists(tempPath);
+        }
+
+        return absolutePath;
     }
 
     public LicenseFileValidationResult validateSavedLicenseFile() throws IOException {
         return validateLicenseFile(new String(Files.readAllBytes(storagePath), StandardCharsets.UTF_8));
     }
 
-    public LicenseFileValidationResult validateLicenseFile(String certificate) throws IOException {
-        JsonNode payload = decodePayload(certificate);
-        String algorithm = payload.path("alg").asText();
-        if (!EXPECTED_ALGORITHM.equals(algorithm)) {
-            return LicenseFileValidationResult.invalid("Unsupported license file algorithm: " + algorithm);
-        }
+   public LicenseFileValidationResult validateLicenseFile(
+        String certificate) throws IOException {
 
-        String enc = payload.path("enc").asText();
-        String sig = payload.path("sig").asText();
-        if (enc.isEmpty() || sig.isEmpty()) {
-            return LicenseFileValidationResult.invalid("License file payload must contain enc and sig");
-        }
+    JsonNode payload = decodePayload(certificate);
 
-        if (!verifyEd25519("license/" + enc, sig)) {
-            return LicenseFileValidationResult.invalid("Invalid license file signature");
-        }
+    String enc = payload.path("enc").asText();
+    String sig = payload.path("sig").asText();
 
-        JsonNode data = objectMapper.readTree(new String(Base64.getDecoder().decode(enc), StandardCharsets.UTF_8));
-        String expiry = payload.path("meta").path("expiry").asText(null);
-        if (expiry != null && Instant.now().isAfter(Instant.parse(expiry))) {
-            return LicenseFileValidationResult.invalid("License file TTL expired at " + expiry);
-        }
-
-        return LicenseFileValidationResult.valid(data);
+    if (enc.isEmpty() || sig.isEmpty()) {
+        return LicenseFileValidationResult.invalid(
+                "License file payload must contain enc and sig");
     }
 
+    if (!verifyEd25519("license/" + enc, sig)) {
+        return LicenseFileValidationResult.invalid(
+                "Invalid license file signature");
+    }
+
+    JsonNode decoded = objectMapper.readTree(
+            new String(
+                    Base64.getDecoder().decode(enc),
+                    StandardCharsets.UTF_8));
+
+    // 1. Check the actual license expiry.
+    String licenseExpiry = decoded.path("data")
+            .path("attributes")
+            .path("expiry")
+            .asText(null);
+
+    if (licenseExpiry == null || licenseExpiry.trim().isEmpty()) {
+        return LicenseFileValidationResult.invalid(
+                "License expiry is missing");
+    }
+
+    Instant licenseExpiryTime = Instant.parse(licenseExpiry);
+    Instant now = Instant.now();
+
+    // License is still valid.
+    if (!now.isAfter(licenseExpiryTime)) {
+        return LicenseFileValidationResult.valid(
+                decoded.path("data"));
+    }
+
+    // 2. License expired; apply configured grace period.
+    long graceHours =
+            keygenService.getOfflineLicenseGraceHours(productId);
+
+    Instant graceDeadline =
+            licenseExpiryTime.plusSeconds(graceHours * 3600L);
+            
+    if (now.isAfter(graceDeadline)) {
+        return LicenseFileValidationResult.invalid(
+                "License grace period expired at " + graceDeadline);
+    }
+
+    // 3. During grace, ensure the signed file itself hasn't expired.
+    String fileExpiry = decoded.path("meta")
+            .path("expiry")
+            .asText(null);
+
+    if (fileExpiry == null || fileExpiry.trim().isEmpty()) {
+        return LicenseFileValidationResult.invalid(
+                "License file TTL is missing");
+    }
+
+    Instant fileExpiryTime = Instant.parse(fileExpiry);
+
+    if (now.isAfter(fileExpiryTime)) {
+        return LicenseFileValidationResult.invalid(
+                "License file TTL expired at " + fileExpiryTime);
+    }
+
+    return LicenseFileValidationResult.valid(
+            decoded.path("data"));
+}
     private JsonNode decodePayload(String certificate) throws IOException {
         String payload = certificate
                 .replace(BEGIN_LICENSE_FILE, "")
