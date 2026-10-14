@@ -394,9 +394,96 @@ class LicenseValidationFilterFallbackTest {
                 + status + "\"}}}";
     }
 
+    @Test
+    void deniesGatedRequestWhenLicenseFileExpiryIsMissing() throws Exception {
+        installCertificate(LICENSE_KEY, "2099-01-01T00:00:00Z", 72, null);
+        RequestContext context = gatedRequest(LICENSE_KEY);
+
+        filter.run();
+
+        assertFallbackDenied(context);
+    }
+
+    @Test
+    void deniesGatedRequestWhenLicenseFileExpiryIsNotAnInstant() throws Exception {
+        installCertificate(LICENSE_KEY, "2099-01-01T00:00:00Z", 72, "not-an-instant");
+        RequestContext context = gatedRequest(LICENSE_KEY);
+
+        filter.run();
+
+        assertFallbackDenied(context);
+    }
+
+    @Test
+    void deniesGatedRequestWhenLicenseFileHasExpiredEvenIfInnerLicenseIsStillValid() throws Exception {
+        installCertificate(LICENSE_KEY, "2099-01-01T00:00:00Z", null, "2026-06-01T12:00:00Z");
+        useClock(Clock.fixed(Instant.parse("2026-06-01T12:00:01Z"), ZoneOffset.UTC));
+        RequestContext context = gatedRequest(LICENSE_KEY);
+
+        filter.run();
+
+        assertFallbackDenied(context);
+    }
+
+    @Test
+    void deniesGatedRequestWhenLicenseFileHasExpiredEvenIfInnerLicenseIsInsideGrace() throws Exception {
+        installCertificate(LICENSE_KEY, "2026-01-01T00:00:00Z", 72, "2026-01-02T00:00:00Z");
+        useClock(Clock.fixed(Instant.parse("2026-01-02T00:00:01Z"), ZoneOffset.UTC));
+        RequestContext context = gatedRequest(LICENSE_KEY);
+
+        filter.run();
+
+        assertFallbackDenied(context);
+    }
+
+    @Test
+    void allowsGatedRequestWhenLicenseFileExpiryInstantHasNotPassed() throws Exception {
+        installCertificate(LICENSE_KEY, "2099-01-01T00:00:00Z", null, "2026-06-01T12:00:00Z");
+        useClock(Clock.fixed(Instant.parse("2026-06-01T11:59:59Z"), ZoneOffset.UTC));
+        RequestContext context = gatedRequest(LICENSE_KEY);
+
+        filter.run();
+
+        assertCoveringFileAllows(context, "before file expiry");
+    }
+
+    @Test
+    void allowsGatedRequestAtExactLicenseFileExpiryInstant() throws Exception {
+        installCertificate(LICENSE_KEY, "2099-01-01T00:00:00Z", null, "2026-06-01T12:00:00Z");
+        useClock(Clock.fixed(Instant.parse("2026-06-01T12:00:00Z"), ZoneOffset.UTC));
+        RequestContext context = gatedRequest(LICENSE_KEY);
+
+        filter.run();
+
+        assertCoveringFileAllows(context, "exact file expiry instant");
+    }
+
+    @Test
+    void exemptRoutesStayAllowedWhenLicenseFileHasExpired() throws Exception {
+        installCertificate(LICENSE_KEY, "2099-01-01T00:00:00Z", null, "2020-01-01T00:00:00Z");
+        useClock(Clock.fixed(Instant.parse("2026-01-01T00:00:00Z"), ZoneOffset.UTC));
+
+        String[] uris = {"/api/client/auth", "/api/client/auth/login", "/actuator", "/actuator/health"};
+        for (String uri : uris) {
+            RequestContext context = RequestContext.getCurrentContext();
+            MockHttpServletRequest request = new MockHttpServletRequest();
+            request.setRequestURI(uri);
+            context.setRequest(request);
+            context.setResponse(new MockHttpServletResponse());
+
+            assertFalse(filter.shouldFilter(), uri);
+            assertTrue(context.sendZuulResponse(), uri);
+        }
+        assertEquals(0, restTemplate.calls.size());
+    }
+
     private void installCertificate(String licenseKey, String expiry, Object graceHours) throws Exception {
+        installCertificate(licenseKey, expiry, graceHours, "2099-01-01T00:00:00Z");
+    }
+
+    private void installCertificate(String licenseKey, String expiry, Object graceHours, String fileExpiry) throws Exception {
         Files.deleteIfExists(storagePath);
-        Files.write(storagePath, certificate(privateKey, licenseKey, expiry, graceHours).getBytes(StandardCharsets.UTF_8));
+        Files.write(storagePath, certificate(privateKey, licenseKey, expiry, graceHours, fileExpiry).getBytes(StandardCharsets.UTF_8));
     }
 
     private void useClock(Clock clock) {
@@ -430,6 +517,11 @@ class LicenseValidationFilterFallbackTest {
 
     private String certificate(Ed25519PrivateKeyParameters privateKey, String licenseKey, String expiry, Object graceHours)
             throws Exception {
+        return certificate(privateKey, licenseKey, expiry, graceHours, "2099-01-01T00:00:00Z");
+    }
+
+    private String certificate(Ed25519PrivateKeyParameters privateKey, String licenseKey, String expiry, Object graceHours, String fileExpiry)
+            throws Exception {
         ObjectNode license = objectMapper.createObjectNode();
         ObjectNode attributes = license.putObject("data").putObject("attributes");
         if (licenseKey != null) {
@@ -446,6 +538,9 @@ class LicenseValidationFilterFallbackTest {
             attributes.putObject("metadata").put("graceExpiryInHours", (String) graceHours);
         } else if (graceHours instanceof BigDecimal) {
             attributes.putObject("metadata").put("graceExpiryInHours", (BigDecimal) graceHours);
+        }
+        if (fileExpiry != null) {
+            license.putObject("meta").put("expiry", fileExpiry);
         }
         String enc = Base64.getEncoder().encodeToString(
                 objectMapper.writeValueAsBytes(license));

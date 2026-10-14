@@ -134,11 +134,22 @@ public class LicenseFileService {
                 return false;
             }
 
-            JsonNode attributes = objectMapper
-                    .readTree(Base64.getDecoder().decode(enc))
+            JsonNode decrypted = objectMapper
+                    .readTree(Base64.getDecoder().decode(enc));
+            JsonNode attributes = decrypted
                     .path("data")
                     .path("attributes");
             if (!headerLicenseKey.equals(attributes.path("key").asText(""))) {
+                return false;
+            }
+
+            String fileExpiry = decrypted.path("meta").path("expiry").asText("");
+            if (fileExpiry.trim().isEmpty()) {
+                return false;
+            }
+            Instant fileExpiryTime = Instant.parse(fileExpiry);
+            Instant now = clock.instant();
+            if (now.isAfter(fileExpiryTime)) {
                 return false;
             }
 
@@ -147,7 +158,6 @@ public class LicenseFileService {
                 return false;
             }
             Instant expiryTime = Instant.parse(expiry);
-            Instant now = clock.instant();
             if (!now.isAfter(expiryTime)) {
                 return true;
             }

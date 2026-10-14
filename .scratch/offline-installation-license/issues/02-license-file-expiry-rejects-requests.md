@@ -10,8 +10,8 @@ A certificate with a missing or past file expiry is not a covering certificate.
 
 **Status:** ready-for-agent
 
-- [ ] On fallback, a gated request is denied when `meta.expiry` is missing, even if the inner license expiry is still in the future and the header key matches
-- [ ] On fallback, a gated request is denied when the gateway time is after `meta.expiry`, even if the inner license is inside stored expiry or inside grace and the header key matches
-- [ ] On fallback, a gated request is allowed when the file expiry instant has not passed, the inner license is covering, and the header key matches
-- [ ] The file-expiry check uses the certificate only and does not call Keygen
-- [ ] `/api/client/auth/**` and `/actuator/**` stay allowed when the license file itself has expired
+- [x] On fallback, a gated request is denied when `meta.expiry` is missing, even if the inner license expiry is still in the future and the header key matches
+- [x] On fallback, a gated request is denied when the gateway time is after `meta.expiry`, even if the inner license is inside stored expiry or inside grace and the header key matches
+- [x] On fallback, a gated request is allowed when the file expiry instant has not passed, the inner license is covering, and the header key matches
+- [x] The file-expiry check uses the certificate only and does not call Keygen
+- [x] `/api/client/auth/**` and `/actuator/**` stay allowed when the license file itself has expired
