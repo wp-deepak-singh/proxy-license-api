@@ -4,7 +4,6 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.netflix.zuul.ZuulFilter;
 import com.netflix.zuul.context.RequestContext;
-import com.wpits.gateway.service.KeygenService;
 import com.wpits.gateway.service.LicenseFileService;
 
 import org.springframework.beans.factory.annotation.Value;
@@ -40,14 +39,12 @@ public class LicenseValidationFilter extends ZuulFilter {
     private final RestTemplate restTemplate;
     private final ObjectMapper objectMapper;
     private final LicenseFileService licenseFileService;
-    private final KeygenService keygenService;
 
 
-    public LicenseValidationFilter(RestTemplate restTemplate, ObjectMapper objectMapper, LicenseFileService licenseFileService, KeygenService keygenService) {
+    public LicenseValidationFilter(RestTemplate restTemplate, ObjectMapper objectMapper, LicenseFileService licenseFileService) {
         this.restTemplate = restTemplate;
         this.objectMapper = objectMapper;
         this.licenseFileService = licenseFileService;
-        this.keygenService = keygenService;
     }
 
     @Override
@@ -89,39 +86,15 @@ public class LicenseValidationFilter extends ZuulFilter {
         }
     
         try {
-            // Try online validation first.
-            LicenseValidationResult result =
-                    validateKeyForProduct(licenseKey);
-    
-            if (!result.isValid()) {
-                failRequest(ctx, result.getMessage(),
-                        HttpStatus.UNAUTHORIZED);
+            if (validateKeyForProduct(licenseKey).isValid()) {
                 return null;
             }
-    
-            // Online validation succeeded.
-            return null;
-    
         } catch (Exception e) {
-            // Keygen is unreachable: use the saved license file.
-            try {
-                String licenseId = keygenService.fetchLicenseIdFromKey(licenseKey);
-                LicenseFileService.LicenseFileValidationResult offlineResult =
-                        licenseFileService.validateSavedLicenseFile(licenseId);
-    
-                if (!offlineResult.isValid()) {
-                    failRequest(ctx,
-                            "Offline license invalid: "
-                                    + offlineResult.getReason(),
-                            HttpStatus.UNAUTHORIZED);
-                }
-    
-            } catch (Exception offlineException) {
-                failRequest(ctx,
-                        "Offline license validation failed.",
-                        HttpStatus.UNAUTHORIZED);
-            }
-    
+            // Keygen did not return a successful validation. The installation file decides.
+        }
+
+        if (!licenseFileService.covers(licenseKey)) {
+            failRequest(ctx, "Offline license invalid.", HttpStatus.UNAUTHORIZED);
         }
     
         return null;

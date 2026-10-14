@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.bouncycastle.crypto.params.Ed25519PublicKeyParameters;
 import org.bouncycastle.crypto.signers.Ed25519Signer;
 import org.bouncycastle.util.encoders.Hex;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
@@ -14,10 +15,14 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
 
 import java.io.IOException;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.Base64;
 import java.util.Collections;
@@ -33,7 +38,9 @@ public class LicenseFileService {
     private final String productId;
     private final Path storagePath;
     private final KeygenService keygenService;
+    private final Clock clock;
 
+    @Autowired
     public LicenseFileService(
             RestTemplate restTemplate,
             ObjectMapper objectMapper,
@@ -44,11 +51,27 @@ public class LicenseFileService {
             @Value("${keygen.token}") String token,
             @Value("${keygen.public-key}") String publicKeyHex,
             @Value("${keygen.storage.path:license.lic}") String storagePath) {
+        this(restTemplate, objectMapper, keygenService, productId, keygenApiUrl, accountId, token,
+                publicKeyHex, storagePath, Clock.systemUTC());
+    }
+
+    public LicenseFileService(
+            RestTemplate restTemplate,
+            ObjectMapper objectMapper,
+            KeygenService keygenService,
+            String productId,
+            String keygenApiUrl,
+            String accountId,
+            String token,
+            String publicKeyHex,
+            String storagePath,
+            Clock clock) {
         this.objectMapper = objectMapper;
         this.keygenService = keygenService;
         this.publicKeyHex = publicKeyHex;
         this.productId = productId;
         this.storagePath = Paths.get(storagePath);
+        this.clock = clock;
     }
 
     public Path checkOutAndSaveLicenseFile(String licenseId) throws IOException {
@@ -101,23 +124,49 @@ public class LicenseFileService {
         return absolutePath;
     }
 
-    public LicenseFileValidationResult validateSavedLicenseFile(String licenseId)
-        throws IOException {
+    public boolean covers(String headerLicenseKey) {
+        try {
+            String certificate = new String(Files.readAllBytes(storagePath), StandardCharsets.UTF_8);
+            JsonNode payload = decodePayload(certificate);
+            String enc = payload.path("enc").asText();
+            String sig = payload.path("sig").asText();
+            if (enc.isEmpty() || sig.isEmpty() || !verifyEd25519("license/" + enc, sig)) {
+                return false;
+            }
 
-    // 1. Checkout only when no local license file exists.
-    if (!Files.exists(storagePath)) {
-        checkOutAndSaveLicenseFile(licenseId);
+            JsonNode attributes = objectMapper
+                    .readTree(Base64.getDecoder().decode(enc))
+                    .path("data")
+                    .path("attributes");
+            if (!headerLicenseKey.equals(attributes.path("key").asText(""))) {
+                return false;
+            }
+
+            String expiry = attributes.path("expiry").asText("");
+            if (expiry.trim().isEmpty()) {
+                return false;
+            }
+            Instant expiryTime = Instant.parse(expiry);
+            Instant now = clock.instant();
+            if (!now.isAfter(expiryTime)) {
+                return true;
+            }
+
+            JsonNode graceHours = attributes.path("metadata").path("graceExpiryInHours");
+            if (!graceHours.isNumber()) {
+                return false;
+            }
+            return !now.isAfter(expiryTime.plus(graceDuration(graceHours)));
+        } catch (Exception ex) {
+            return false;
+        }
     }
 
-    // 2. Read and verify the existing saved file.
-    String certificate = new String(
-            Files.readAllBytes(storagePath),
-            StandardCharsets.UTF_8);
+    public LicenseFileValidationResult validateSavedLicenseFile() throws IOException {
+        return validateLicenseFile(new String(Files.readAllBytes(storagePath), StandardCharsets.UTF_8));
+    }
 
-    return validateLicenseFile(certificate);
-}
-
-   public LicenseFileValidationResult validateLicenseFile(
+    public LicenseFileValidationResult validateLicenseFile(
         String certificate) throws IOException {
 
     JsonNode payload = decodePayload(certificate);
@@ -192,6 +241,14 @@ public class LicenseFileService {
     return LicenseFileValidationResult.valid(
             decoded.path("data"));
 }
+    private static Duration graceDuration(JsonNode graceHours) {
+        BigDecimal totalNanos = graceHours.decimalValue()
+                .multiply(new BigDecimal("3600000000000"))
+                .setScale(0, RoundingMode.HALF_UP);
+        BigDecimal[] split = totalNanos.divideAndRemainder(new BigDecimal("1000000000"));
+        return Duration.ofSeconds(split[0].longValueExact(), split[1].intValueExact());
+    }
+
     private JsonNode decodePayload(String certificate) throws IOException {
         String payload = certificate
                 .replace(BEGIN_LICENSE_FILE, "")
